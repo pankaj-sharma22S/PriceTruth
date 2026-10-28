@@ -1,0 +1,53 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pricetruth
+      POSTGRES_USER: pricetruth
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-localdev_only_change_me}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pricetruth -d pricetruth"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+  backend:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://pricetruth:${POSTGRES_PASSWORD:-localdev_only_change_me}@db:5432/pricetruth
+      FRONTEND_ORIGIN: http://localhost:8080
+    ports:
+      - "8001:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+  worker:
+    build: .
+    command: ["python", "-m", "app.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://pricetruth:${POSTGRES_PASSWORD:-localdev_only_change_me}@db:5432/pricetruth
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE_URL: http://localhost:8001/api
+    ports:
+      - "8080:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+volumes:
+  postgres_data:
