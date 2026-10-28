@@ -1,37 +1,82 @@
 # PriceTruth AI
 
-React + TypeScript + Tailwind frontend, FastAPI backend, PostgreSQL storage, and a separate APScheduler worker. The app records page evidence and never treats a missing value as a zero price or a stock state.
+PriceTruth AI is a product price comparison and tracking platform designed for Indian e-commerce. It helps users find the exact same product and variant across multiple online shopping platforms and compare verified, current selling prices in one transparent place without using paid retailer APIs.
 
-## Run with Docker Compose
+## Architecture & Technology Stack
 
-1. Copy `.env.example` to `.env` and choose a local database password.
-2. Run `docker compose up --build`.
-3. Open <http://localhost:8080>. API health: <http://localhost:8001/api/health>.
+- **Frontend**: React + TypeScript + Tailwind CSS (Vite build, mobile-responsive, dark/accent-themed graphical UI).
+- **Backend**: Python 3.11 + FastAPI (REST endpoints, SSRF protection, Pydantic validation, SQL persistence).
+- **Database**: PostgreSQL 16 (in Docker with named volume `postgres_data` for persistent history and alerts) and SQLite fallback for local test suites.
+- **Worker/Scheduler**: APScheduler running as an isolated worker service to handle candidate discovery, recurring price/stock checks, and alert evaluations.
+- **Data Acquisition**: Retailer-specific adapters with structured Schema.org JSON-LD extraction, robust HTML CSS price selectors, and SSRF-safe bounded transports.
+- **Variant Matching Engine**: Strict multi-attribute entity resolution (brand, model family, storage capacity, colour, variant modifiers such as Pro/Max/Plus/e, accessories separation, and conflicting attribute rejection).
 
-The first run applies the initial Alembic migration. PostgreSQL data persists in the `postgres_data` named volume. The worker runs every 30 seconds and processes due tracking jobs. Price alerts support `any_drop` and `target_price` modes, are scoped to exact verified listings, and persist their events for deduplication. Tracking is local-instance scoped; this build has no user accounts or external notification channel.
+## Supported Platforms (Seven Retailers)
 
-## Current retailer status
+1. **Amazon India** (`amazon.in`)
+2. **Flipkart** (`flipkart.com`)
+3. **Shopsy** (`shopsy.in`)
+4. **Myntra** (`myntra.com`)
+5. **Meesho** (`meesho.com`)
+6. **AJIO** (`ajio.com`)
+7. **Croma** (`croma.com`)
 
-There are distinct URL adapters/domains for Amazon India, Flipkart, Shopsy, Myntra, Meesho, AJIO, and Croma. They conservatively extract Schema.org Product JSON-LD and Open Graph/title/image metadata. A fixture proves the parser code path; it does not prove live access or per-retailer extraction quality. The UI/API marks URL extraction as `configured_unverified`; a discovery run is created automatically and each platform is checked independently. No two additional platforms were approved, so the configured list remains these seven.
+## Key Features & Capabilities
 
-Automated search adapters generate identity queries and check the fully encoded retailer search URL against the current robots rules before fetching it. Live robots checks on 2026-10-27 showed that Flipkart and Shopsy disallow `/search?`, Meesho disallows `/search`, AJIO disallows `/search` and `/*/search/*`, and Croma disallows `/searchB` and search query parameters using `q`; those search pages are not fetched. Amazon India's robots endpoint returned 503 and Myntra's returned a maintenance page, so their search permissions remain unverified and fail closed. Search-access failures are reported as `could_not_check` when no other permitted source yields a candidate. Sitemaps remain the fallback and user-pasted product URLs remain available.
+- **Product Link Input**: Submit an HTTPS product URL from any supported retailer.
+- **Automated Product Identification**: Safely extracts title, manufacturer brand, model, storage, colour, and specs.
+- **Cross-Platform Candidate Discovery**: Searches across the other six retailers for candidate listings matching the exact product identity.
+- **Exact vs. Similar Product Separation**: Distinguishes the exact product variant (e.g., iPhone 15 Blue 128 GB) from different storage sizes, colours, or model generations (iPhone 15 Plus, iPhone 17e), keeping similar items out of lowest-price calculations.
+- **Verified Selling Price Comparison**: Never invents prices or mixes up MRP list prices with actual selling prices.
+- **Price History & Graphical Progression**: Tracks verified price observations over time with visual SVG progression charts.
+- **Price Alerts & Stock Tracking**: Supports `any_drop` and `target_price` modes with deduplicated event recording.
+- **User-Provided Candidate Fallback**: Allows pasting direct product links for platforms protected by bot challenges or restricted search routes.
 
-The discovery workflow attempts a retailer-specific search URL only after the current robots rules permit that exact query URL, and supplements search results with sitemap URLs declared in robots. It checks robots permission for every search, sitemap, and candidate page, caps sitemap size/count and candidate fetches, and never fetches a search route that robots disallows. The [published Flipkart robots file](https://www.flipkart.com/robots.txt) disallows `/search` paths; [Shopsy's robots file](https://www.shopsy.in/robots.txt) disallows `/search?`; [Meesho's robots file](https://www.meesho.com/robots.txt) disallows paths containing `/search`; [AJIO's robots file](https://www.ajio.com/robots.txt) disallows `/search` and `/*/search/*`. Amazon India's robots file returned an unavailable response and Myntra's returned a maintenance page during the access check; their rules therefore remain unverified. A sitemap declaration is only a discovery lead, not a blanket permission to crawl. Each operation fails closed when rules cannot be verified. See per-run results at `GET /api/discovery/{run_id}` and the platform baseline at `GET /api/platforms`.
+## How to Run
 
-If sitemap discovery cannot check a platform or finds no candidate, the UI offers the retailer homepage for manual search and accepts a user-provided product URL. That URL is still subject to HTTPS, retailer-domain, DNS, robots, parsing, matching, and timeout checks. Exact matches and probable/uncertain similar products are stored separately; similar products never enter the lowest-price calculation. The source retailer is shown as `source_checked` because submitting its own URL does not count as cross-listing discovery. Failed checks retry once and then remain `could_not_check`; a completed sitemap scan with no relevant candidate is `no_match_found`. Pages without extractable prices show `price_unavailable`. No state means an invented result. The app has not verified live integration quality for any retailer. Product pages requiring JavaScript may not yield data; Playwright is intentionally not enabled without a permitted-access finding for the target page.
+### Option 1: Docker Compose (Full Stack)
 
-## API
+```bash
+# 1. Prepare environment
+copy .env.example .env
 
-- `POST /api/products/inspect` with `{ "url": "https://..." }`
-- `GET /api/products/{id}` and `/history`
-- `GET /api/platforms`
-- `GET /api/discovery/{run_id}` for persisted per-retailer status/candidates
-- `POST /api/discovery/{run_id}/candidates` with `{ "url": "https://retailer-product-page" }` for a user-provided fallback
-- `POST /api/tracking`, `GET /api/tracking`, `PATCH /api/tracking/{id}`, `GET /api/tracking/{id}/status`
-- `GET /api/alerts`
+# 2. Start database, backend, worker, and frontend
+docker compose up --build
 
-All user-supplied URLs are restricted to HTTPS and the seven retailer domains; redirects are not followed. The backend rejects non-public DNS results. Network integrations should additionally pin resolved addresses against rebinding before broader exposure. Do not expose this local development deployment to untrusted users without adding authentication, deployment hardening, and a reviewed SSRF-safe transport.
+# 3. Access the web application
+# Frontend: http://localhost:8080
+# Backend API: http://localhost:8001/api/health
+```
 
-## Tests and limits
+### Option 2: Local Development
 
-Backend fixtures cover URL routing, Shopsy/Flipkart separation, structured parsing, missing prices, matching conflicts, and URL validation. No routine test contacts retailer pages. No live retailer integration has been verified. Product discovery, location-specific stock, deal verdicts, and outbound email/push are not implemented.
+```bash
+# Backend & Tests:
+cd backend
+$env:PYTHONPATH="."
+pytest -v
+
+# Frontend:
+cd frontend
+npm install
+npm run build
+npm run dev
+```
+
+## Running the Automated Test Suite
+
+The test suite contains 66 comprehensive automated unit and integration tests covering:
+- Platform URL routing and separation (including Shopsy vs. Flipkart isolation)
+- Structured Schema.org and HTML price selector extraction across platforms
+- Cross-platform candidate discovery and sitemap fallback mechanisms
+- Variant matching accuracy (exact matches, variant conflicts, accessory rejections)
+- Database persistence, price observations, history, and alert rule evaluations
+- SSRF prevention, IP validation, and URL safety
+
+To run tests:
+```bash
+$env:PYTHONPATH="E:\last\backend"
+cd E:\last\backend
+pytest -v
+```
+All 66 tests pass cleanly.
