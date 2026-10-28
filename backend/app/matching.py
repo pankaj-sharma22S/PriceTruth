@@ -8,6 +8,7 @@ COLOR_ALIASES = {"grey": "gray"}
 TITLE_COLORS = {"black", "white", "blue", "silver", "gold", "pink", "green", "purple", "red", "orange", "teal", "lavender", "sage", "midnight", "starlight", "ultramarine", "graphite", "titanium", "natural", "desert", "violet", "yellow", "gray", "grey", "brown", "cream"}
 MODEL_VARIANTS = {"pro", "max", "plus", "mini", "air", "ultra", "fold", "flip", "lite", "edge", "fe", "se"}
 MODEL_FAMILIES = ("iphone", "pixel", "ipad", "macbook", "galaxy", "xperia", "oneplus", "redmi", "poco", "oppo", "vivo")
+RETAILER_NAMES = {"shopsy", "flipkart", "amazon", "amazonindia", "meesho", "croma", "ajio", "myntra"}
 ACCESSORY_PATTERNS = {
     "phone_case": re.compile(r"\b(?:case|cover|shell|skin)\b", re.I),
     "screen_protector": re.compile(r"\b(?:screen protector|screen guard|tempered glass|lens protector)\b", re.I),
@@ -69,8 +70,19 @@ def _same_variant_title(left: dict, right: dict) -> bool:
 def match_product(anchor: dict, candidate: dict) -> dict:
     evidence, conflicts, missing = [], [], []
     a_brand, b_brand = anchor.get("brand"), candidate.get("brand")
-    if a_brand and b_brand and _brand_key(a_brand) != _brand_key(b_brand):
-        conflicts.append("brand differs")
+    a_title = _title_attributes(anchor.get("title", ""))
+    b_title = _title_attributes(candidate.get("title", ""))
+
+    if a_brand and b_brand:
+        a_key, b_key = _brand_key(a_brand), _brand_key(b_brand)
+        if a_key != b_key:
+            # If the candidate's brand is a retailer name (e.g. Shopsy/Flipkart), verify from title
+            if b_key in RETAILER_NAMES and a_key in {normalize_key(t) for t in b_title["tokens"]}:
+                evidence.append(f"brand verified from title ({a_brand})")
+            elif a_key in RETAILER_NAMES and b_key in {normalize_key(t) for t in a_title["tokens"]}:
+                evidence.append(f"brand verified from title ({b_brand})")
+            else:
+                conflicts.append("brand differs")
 
     a_ids, b_ids = anchor.get("identifiers", {}), candidate.get("identifiers", {})
     exact_id = False
@@ -84,6 +96,7 @@ def match_product(anchor: dict, candidate: dict) -> dict:
                 evidence.append(f"exact {key}")
                 exact_id = True
                 exact_gtin = exact_gtin or key == "gtin"
+
     if anchor.get("model") and candidate.get("model"):
         if normalize_key(anchor["model"]) == normalize_key(candidate["model"]):
             evidence.append("model matches")
@@ -91,7 +104,18 @@ def match_product(anchor: dict, candidate: dict) -> dict:
         else:
             conflicts.append("model differs")
     elif anchor.get("model"):
-        missing.append("model")
+        if normalize_key(anchor["model"]) in normalize_key(candidate.get("title", "")):
+            evidence.append(f"model matches in title ({anchor['model']})")
+            exact_id = True
+        elif a_title["model_keys"] and a_title["model_keys"] == b_title["model_keys"]:
+            evidence.append(f"model matches in title ({', '.join(a_title['model_keys'])})")
+            exact_id = True
+        else:
+            missing.append("model")
+    elif a_title["model_keys"] and b_title["model_keys"]:
+        if a_title["model_keys"] == b_title["model_keys"]:
+            evidence.append(f"model matches in title ({', '.join(a_title['model_keys'])})")
+            exact_id = True
 
     a_specs, b_specs = anchor.get("specs", {}), candidate.get("specs", {})
     for key in CRITICAL_SPECS:
@@ -102,10 +126,11 @@ def match_product(anchor: dict, candidate: dict) -> dict:
             else:
                 evidence.append(f"{key} matches")
         elif left and key in ("model", "sku", "mpn", "gtin", "ram", "storage", "ssd", "processor", "cpu", "gpu", "screen", "size"):
-            missing.append(key)
+            if key == "model" and exact_id:
+                pass
+            else:
+                missing.append(key)
 
-    a_title = _title_attributes(anchor.get("title", ""))
-    b_title = _title_attributes(candidate.get("title", ""))
     a_storage = a_title["storage"] | _spec_variant_values(anchor, "storage")
     b_storage = b_title["storage"] | _spec_variant_values(candidate, "storage")
     a_colors = a_title["colors"] | _spec_variant_values(anchor, "colors")
@@ -120,7 +145,7 @@ def match_product(anchor: dict, candidate: dict) -> dict:
             conflicts.append("storage differs")
         else:
             evidence.append("storage matches in title or specifications")
-            exact_id = exact_id or _same_variant_title(a_title, b_title)
+            exact_id = exact_id or _same_variant_title(a_title, b_title) or (bool(a_title["model_keys"]) and a_title["model_keys"] == b_title["model_keys"])
             missing = [item for item in missing if item != "storage"]
     if a_colors:
         if not b_colors:
@@ -144,6 +169,10 @@ def match_product(anchor: dict, candidate: dict) -> dict:
         evidence.append("exact model, storage, and colour title match")
         exact_id = True
         variant_evidence = True
+
+    if not conflicts and exact_id and ("storage matches in title or specifications" in evidence) and (not a_colors or "colour matches in title or specifications" in evidence):
+        variant_evidence = True
+
     if conflicts:
         classification = "non_match"
     elif exact_id and not missing and (exact_gtin or variant_evidence):

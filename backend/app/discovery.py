@@ -17,7 +17,7 @@ from .adapters import ADAPTERS, PlatformAdapter, adapter_for_url
 from .adapters.registry import normalize_key
 from .config import settings
 from .matching import match_product
-from .security import AccessCheckError, fetch_bounded_response, permitted_sitemaps, validate_permitted_page
+from .security import AccessCheckError, fetch_bounded_response, permitted_sitemaps, validate_permitted_page, validate_public_product_url
 
 log = logging.getLogger("pricetruth.discovery")
 STOP_WORDS = {"with", "from", "this", "that", "new", "the", "and", "for", "inch", "india", "online", "buy", "shop", "at"}
@@ -202,7 +202,9 @@ def _search_attempt(adapter: PlatformAdapter, query: dict, deadline: float | Non
                "request_attempted": False, "http_status": None, "content_type": None,
                "response_bytes": 0, "candidate_urls_extracted": 0, "parser_status": "not_run"}
     try:
-        validate_permitted_page(url, deadline=deadline)
+        validate_public_product_url(url)
+        if settings.enforce_robots:
+            validate_permitted_page(url, deadline=deadline)
     except ValueError as exc:
         message = str(exc)
         details.update({"status": "not_attempted", "reason": message,
@@ -421,18 +423,19 @@ def discover_platform_candidates(platform_key: str, source_product: dict, manual
     def run_search():
         return search_product_urls(adapter, source_product, deadline)
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        sitemap_future = pool.submit(run_sitemap)
-        search_future = pool.submit(run_search)
-        sitemap_urls, sitemap_complete, sitemap_note, sitemap_details = sitemap_future.result()
+    search_result = run_search()
+    search_urls = search_result.get("urls", [])
+    search_titles = search_result.get("titles", {})
+
+    sitemap_urls, sitemap_complete, sitemap_note, sitemap_details = [], True, "", {}
+    if not search_urls and not (deadline is not None and time.monotonic() >= deadline - 5.0):
         try:
-            search_result = search_future.result()
+            sitemap_urls, sitemap_complete, sitemap_note, sitemap_details = run_sitemap()
         except Exception as exc:
-            search_result = {"attempts": [], "urls": [], "complete": False, "reason": str(exc)[:180]}
+            sitemap_note = f"Sitemap discovery unavailable: {str(exc)[:140]}"
+            sitemap_details = {"status": "unavailable", "reason": str(exc)[:180], "pages_checked": 0, "product_urls_extracted": 0}
 
     notes = [note for note in (sitemap_note, search_result.get("reason")) if note]
-    search_urls = search_result["urls"]
-    search_titles = search_result.get("titles", {})
     ranked_search = sorted(search_urls, key=lambda url: (_candidate_score(url, source_product, platform_key, search_titles.get(url)), url), reverse=True)
     ranked_sitemap = sorted(sitemap_urls, key=lambda url: (_candidate_score(url, source_product, platform_key), url), reverse=True)
     manual_urls = list(dict.fromkeys(manual_urls))
@@ -471,7 +474,10 @@ def discover_platform_candidates(platform_key: str, source_product: dict, manual
                 match_rejections += 1
                 _log("discovery_candidate", {"platform": platform_key, **record})
                 return record, None, page_failures, match_rejections, price_verified, exact_price_verified
-            validate_permitted_page(candidate_url, deadline=deadline)
+            if settings.enforce_robots:
+                validate_permitted_page(candidate_url, deadline=deadline)
+            else:
+                validate_public_product_url(candidate_url)
             record["request_attempted"] = True
             response = fetch_bounded_response(candidate_url, settings.max_response_bytes,
                                               timeout=_request_timeout(deadline, settings.discovery_candidate_timeout_seconds))

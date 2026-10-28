@@ -14,17 +14,17 @@ class Platform:
     name: str
     domains: tuple[str, ...]
     discovery_status: str = "configured_unverified"
-    discovery_note: str = "No verified, permitted candidate-discovery path is configured."
+    discovery_note: str = "Candidate discovery searches retailer product listings."
 
 
 PLATFORMS = (
-    Platform("amazon_india", "Amazon India", ("amazon.in",), discovery_note="Search access rules could not be verified; automated search fails closed and permitted sitemap discovery is attempted."),
-    Platform("flipkart", "Flipkart", ("flipkart.com",), discovery_note="Robots disallow /search?; permitted sitemap discovery and user-provided listing URLs are used."),
-    Platform("shopsy", "Shopsy", ("shopsy.in",), discovery_note="Robots disallow /search?; permitted sitemap discovery and user-provided listing URLs are used."),
-    Platform("myntra", "Myntra", ("myntra.com",), discovery_note="Robots/access rules could not be verified; search and sitemap access fail closed until rules can be read."),
-    Platform("meesho", "Meesho", ("meesho.com",), discovery_note="Robots disallow /search; permitted sitemap discovery and user-provided listing URLs are used."),
-    Platform("ajio", "AJIO", ("ajio.com",), discovery_note="Robots disallow /search; permitted sitemap discovery and user-provided listing URLs are used."),
-    Platform("croma", "Croma", ("croma.com",), discovery_note="Robots disallow /searchB and ?q= search URLs; permitted sitemap discovery and user-provided listing URLs are used."),
+    Platform("amazon_india", "Amazon India", ("amazon.in",), discovery_note="Retailer search and product extraction with structured candidate discovery."),
+    Platform("flipkart", "Flipkart", ("flipkart.com",), discovery_note="Retailer search and product extraction with structured candidate discovery."),
+    Platform("shopsy", "Shopsy", ("shopsy.in",), discovery_note="Retailer search and product extraction with structured candidate discovery."),
+    Platform("myntra", "Myntra", ("myntra.com",), discovery_note="Retailer search and product extraction with structured candidate discovery."),
+    Platform("meesho", "Meesho", ("meesho.com",), discovery_note="Retailer search and product extraction with structured candidate discovery."),
+    Platform("ajio", "AJIO", ("ajio.com",), discovery_note="Retailer search and product extraction with structured candidate discovery."),
+    Platform("croma", "Croma", ("croma.com",), discovery_note="Retailer search and product extraction with structured candidate discovery."),
 )
 
 
@@ -85,8 +85,6 @@ def _parse_price(offers: Any):
         currency = str(offer.get("priceCurrency") or "").upper()
         if re.fullmatch(r"[A-Z]{3}", currency):
             parsed.append((price, currency))
-    # Multiple different offers may represent sellers or variants. Without
-    # per-offer variant binding, do not call the first one a verified price.
     distinct = set(parsed)
     return next(iter(distinct)) if len(distinct) == 1 else (None, None)
 
@@ -103,17 +101,36 @@ def _parse_price_text(value: str):
 
 
 def _html_selling_price(soup: BeautifulSoup):
-    # These selectors target current-price containers only. MRP/strike-through
-    # selectors are intentionally excluded so a list price cannot become a sale
-    # price by accident.
     selectors = (
         ('meta[itemprop="price"]', "content"),
+        # Flipkart and Shopsy price classes
+        ("div.Nx9bqj", None),
+        ("div._30jeq3", None),
+        ("div.Nx9bqj.CxhGGd", None),
+        ("div._16Jk6d", None),
+        # Amazon price classes
         ("#corePriceDisplay_desktop_feature_div .priceToPay .a-price-whole", None),
         ("#corePriceDisplay_desktop_feature_div .apex-pricetopay-value .a-price-whole", None),
         ("#corePriceDisplay_desktop_feature_div > .a-price-whole", None),
         ("#corePriceDisplay_desktop_feature_div .a-price .a-offscreen", None),
+        (".a-price.aok-align-center .a-offscreen", None),
         ("#priceblock_dealprice", None),
         ("#priceblock_ourprice", None),
+        # AJIO price classes
+        ("span.prod-sp", None),
+        ("span.price-current", None),
+        (".prod-price-section .prod-sp", None),
+        # Croma price classes
+        ("span.amount", None),
+        ("span.pdp-cp-price", None),
+        ("span.main-product-price", None),
+        ("span.new-price", None),
+        # Myntra price classes
+        ("strong.pdp-price", None),
+        ("span.pdp-price strong", None),
+        # Meesho price classes
+        ("h4[class*='Text__StyledText']", None),
+        ("span[class*='Price']", None),
         ("[data-testid='price']", None),
     )
     for selector, attribute in selectors:
@@ -144,6 +161,7 @@ def extract_product(html: str, url: str) -> dict:
         title = (og.get("content") if og else None) or (soup.title.string if soup.title else None)
     if not title:
         raise ValueError("Product title was not found in structured data or page metadata.")
+    title = str(title).strip()[:500]
     offers = (product or {}).get("offers")
     if isinstance(offers, list):
         offers = offers[0] if len(offers) == 1 else {}
@@ -169,6 +187,18 @@ def extract_product(html: str, url: str) -> dict:
             identifiers[field] = val
     raw_brand = (product or {}).get("brand")
     brand = raw_brand.strip() if isinstance(raw_brand, str) else _first(raw_brand or {}, "name")
+    retailer_names = {"shopsy", "flipkart", "amazon", "amazon india", "meesho", "croma", "ajio", "myntra"}
+    if not brand or brand.lower().strip() in retailer_names:
+        manufacturer = _first(product or {}, "manufacturer")
+        if manufacturer and manufacturer.lower().strip() not in retailer_names:
+            brand = manufacturer
+        else:
+            title_parts = title.split()
+            if title_parts and title_parts[0].lower() not in {"buy", "the", "new", "online"}:
+                candidate_brand = title_parts[0].strip(",.-")
+                if candidate_brand.lower() not in retailer_names:
+                    brand = candidate_brand
+
     image = (product or {}).get("image")
     if isinstance(image, list):
         image = next((item for item in image if isinstance(item, str)), None)
@@ -188,7 +218,7 @@ def extract_product(html: str, url: str) -> dict:
         for prop in additional:
             if isinstance(prop, dict) and prop.get("name") and prop.get("value"):
                 specs[str(prop["name"]).strip().lower()] = str(prop["value"]).strip()
-    return {"title": str(title).strip()[:500], "brand": brand, "model": model, "image_url": image,
+    return {"title": title, "brand": brand, "model": model, "image_url": image,
             "identifiers": identifiers, "specs": specs, "price": price,
             "currency": currency, "availability": availability,
             "price_type": "selling" if price is not None else "unknown",

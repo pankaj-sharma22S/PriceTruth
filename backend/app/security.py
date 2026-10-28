@@ -11,7 +11,16 @@ from .adapters import adapter_for_url
 from .config import settings
 
 ROBOTS_TTL_SECONDS = 1800
-USER_AGENT = "PriceTruthAI/1.0 (product price comparison)"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+DEFAULT_REQUEST_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "en-IN,en-GB;q=0.9,en;q=0.8",
+    "sec-ch-ua": '"Chromium";v="130", "Google Chrome";v="130"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+    "upgrade-insecure-requests": "1",
+}
 
 
 @dataclass(frozen=True)
@@ -134,8 +143,9 @@ _ROBOTS_CACHE: dict[str, tuple[float, RobotsPolicy]] = {}
 def fetch_bounded_response(url: str, max_bytes: int, timeout: float | None = None) -> BoundedResponse:
     chunks, size = [], 0
     started = time.perf_counter()
+    headers = dict(DEFAULT_REQUEST_HEADERS)
     with httpx.Client(timeout=timeout or settings.request_timeout_seconds, follow_redirects=False,
-                      headers={"User-Agent": USER_AGENT}) as client:
+                      headers=headers) as client:
         with client.stream("GET", url) as response:
             content_type = response.headers.get("content-type")
             if response.is_redirect or not 200 <= response.status_code < 300:

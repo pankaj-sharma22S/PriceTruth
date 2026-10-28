@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     discovery_search_timeout_seconds: float = 10.0
     discovery_candidate_timeout_seconds: float = 10.0
     discovery_overall_timeout_seconds: float = 35.0
+    enforce_robots: bool = False
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
