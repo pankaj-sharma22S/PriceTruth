@@ -89,3 +89,38 @@ def test_multiple_schema_offers_with_different_prices_are_not_arbitrarily_verifi
     data = extract_product(page, "https://www.croma.com/phone-x/p/123")
     assert data["price"] is None
     assert data["price_type"] == "unknown"
+
+
+def test_shopsy_next_data_price_and_image_extracted_correctly():
+    from app.adapters.registry import extract_product
+    next_payload = {
+        "props": {
+            "pageProps": {
+                "initialState": {
+                    "pageData": {
+                        "RESPONSE": {
+                            "pageData": {
+                                "pageContext": {
+                                    "pricing": {
+                                        "finalPrice": {"value": 91999, "currency": "INR"},
+                                        "mrp": 99900,
+                                        "totalDiscount": 7
+                                    },
+                                    "imageUrl": "http://rukmini1.flixcart.com/image/{@width}/{@height}/test.jpeg"
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    page = f'''<meta property="og:title" content="Apple iPhone 17 (Black, 256 GB)">
+    <script type="application/ld+json">{json.dumps({"@type": "Product", "name": "Apple iPhone 17", "offers": {"@type": "Offer", "price": "99900", "priceCurrency": "INR", "availability": "https://schema.org/InStock"}})}</script>
+    <script id="__NEXT_DATA__" type="application/json">{json.dumps(next_payload)}</script>'''
+    data = extract_product(page, "https://www.shopsy.in/apple-iphone-17-black-256-gb/p/itmc61b40459dd98")
+    assert data["price"] == 91999
+    assert data["mrp"] == 99900
+    assert data["discount_percent"] == 7
+    assert data["evidence"]["source"] == "script:next_data"
+    assert data["image_url"] == "https://rukmini1.flixcart.com/image/800/800/test.jpeg"

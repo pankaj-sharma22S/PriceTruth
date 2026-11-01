@@ -16,12 +16,12 @@ from bs4 import BeautifulSoup
 from .adapters import ADAPTERS, PlatformAdapter, adapter_for_url
 from .adapters.registry import normalize_key
 from .config import settings
-from .matching import match_product
+from .matching import ACCESSORY_PATTERNS, match_product
 from .security import AccessCheckError, fetch_bounded_response, permitted_sitemaps, validate_permitted_page, validate_public_product_url
 
 log = logging.getLogger("pricetruth.discovery")
 STOP_WORDS = {"with", "from", "this", "that", "new", "the", "and", "for", "inch", "india", "online", "buy", "shop", "at"}
-COLORS = {"black", "white", "blue", "silver", "gold", "pink", "green", "purple", "red", "orange", "teal", "lavender", "sage", "midnight", "starlight", "ultramarine", "graphite", "titanium", "natural", "desert", "violet", "yellow", "grey", "gray", "brown", "cream"}
+COLORS = {"black", "white", "blue", "silver", "gold", "pink", "green", "purple", "red", "orange", "teal", "lavender", "sage", "midnight", "starlight", "ultramarine", "graphite", "titanium", "natural", "desert", "violet", "yellow", "grey", "gray", "brown", "cream", "matte", "glossy", "metallic", "ceramic", "phantom", "space"}
 SEARCH_ROUTES = {
     "amazon_india": ("/s", "k"),
     "flipkart": ("/search", "q"),
@@ -29,7 +29,7 @@ SEARCH_ROUTES = {
     "myntra": ("/search", "q"),
     "meesho": ("/search", "q"),
     "ajio": ("/search/", "text"),
-    "croma": ("/searchB", "q"),
+    "croma": ("/search/", "text"),
 }
 
 
@@ -106,8 +106,9 @@ def build_search_queries(product: dict, platform_key: str) -> list[dict]:
     primary = " ".join(part for part in [*base, *variant, *global_ids] if part)
     fallback_storage = [re.sub(r"(\d+(?:\.\d+)?)(GB|TB|MB)", r"\1 \2", value, flags=re.I) for value in attrs["storage"]]
     fallback = " ".join(part for part in [attrs["brand"], attrs["family"], attrs["model"], *attrs["color"], *fallback_storage, *attrs["other_variant"], *global_ids] if part)
+    model_only = " ".join(part for part in [*base, *global_ids] if part)
     queries = []
-    for name, query in (("primary", primary), ("fallback", fallback)):
+    for name, query in (("primary", primary), ("fallback", fallback), ("model", model_only)):
         query = re.sub(r"\s+", " ", query).strip()[:180]
         if query and query not in [item["query"] for item in queries]:
             queries.append({"kind": name, "query": query})
@@ -186,13 +187,40 @@ def extract_candidate_urls(html: str, search_url: str, platform_key: str, link_l
         label = re.sub(r"\s+", " ", label).strip()
         if label:
             candidate_titles[url] = label[:300]
+    if platform_key == "myntra" and not candidates:
+        idx = html.find("window.__myx = ")
+        if idx != -1:
+            try:
+                sub = html[idx + len("window.__myx = "):]
+                obj, _ = json.JSONDecoder().raw_decode(sub)
+                m_products = obj.get("searchData", {}).get("results", {}).get("products", [])
+                for prod in m_products:
+                    landing = prod.get("landingPageUrl")
+                    if landing:
+                        cand_url = urljoin("https://www.myntra.com/", landing)
+                        parts = urlparse(cand_url)
+                        cand_url = urlunparse((parts.scheme, parts.netloc, parts.path, "", "", ""))
+                        if is_product_page_url("myntra", cand_url) and cand_url not in seen:
+                            seen.add(cand_url)
+                            candidates.append(cand_url)
+                            name = prod.get("productName") or prod.get("product") or ""
+                            brand = prod.get("brand") or ""
+                            candidate_titles[cand_url] = f"{brand} {name}".strip()
+            except Exception:
+                pass
     counts["product_urls_extracted"] = len(candidates)
     return {"urls": candidates, "titles": candidate_titles, "counts": counts}
 
 
 def _search_url(adapter: PlatformAdapter, query: str) -> str:
     path, parameter = SEARCH_ROUTES[adapter.platform.key]
-    return f"https://www.{adapter.platform.domains[0]}{path}?{urlencode({parameter: query})}"
+    if adapter.platform.key == "myntra":
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", query).strip("-").lower()
+        return f"https://www.myntra.com/{slug}"
+    params = {parameter: query}
+    if adapter.platform.key == "amazon_india":
+        params["ref"] = "nb_sb_noss"
+    return f"https://www.{adapter.platform.domains[0]}{path}?{urlencode(params)}"
 
 
 def _search_attempt(adapter: PlatformAdapter, query: dict, deadline: float | None = None) -> dict:
@@ -202,9 +230,10 @@ def _search_attempt(adapter: PlatformAdapter, query: dict, deadline: float | Non
                "request_attempted": False, "http_status": None, "content_type": None,
                "response_bytes": 0, "candidate_urls_extracted": 0, "parser_status": "not_run"}
     try:
-        validate_public_product_url(url)
         if settings.enforce_robots:
             validate_permitted_page(url, deadline=deadline)
+        elif not adapter.supports_url(url):
+            raise ValueError("The URL host is not one of the seven configured retailer domains.")
     except ValueError as exc:
         message = str(exc)
         details.update({"status": "not_attempted", "reason": message,
@@ -221,6 +250,20 @@ def _search_attempt(adapter: PlatformAdapter, query: dict, deadline: float | Non
         details.update({"http_status": response.status_code, "content_type": response.content_type,
                         "response_bytes": len(response.body)})
         if response.status_code != 200:
+            # Fallback to web search engine if direct search is blocked (e.g. HTTP 403 on Croma, Meesho, AJIO)
+            if not (deadline and time.monotonic() >= deadline - 3.0):
+                try:
+                    from .discovery_engine import URLDiscoveryProvider
+                    web_urls = URLDiscoveryProvider._search_web_engine(adapter.platform.domains[0], [query["query"]], adapter.platform.key, deadline)
+                    if web_urls:
+                        details["candidate_urls_extracted"] = len(web_urls)
+                        details["status"] = "results_found"
+                        details["reason"] = None
+                        details["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
+                        _log("discovery_search", {"platform": adapter.platform.key, **details})
+                        return {**details, "urls": web_urls, "titles": {}}
+                except Exception:
+                    pass
             details.update({"status": "http_error", "reason": f"HTTP {response.status_code}"})
             details["elapsed_ms"] = int((time.perf_counter() - started) * 1000)
             _log("discovery_search", {"platform": adapter.platform.key, **details})
@@ -233,6 +276,15 @@ def _search_attempt(adapter: PlatformAdapter, query: dict, deadline: float | Non
             _log("discovery_search", {"platform": adapter.platform.key, **details})
             return {**details, "urls": [], "titles": {}}
         parsed = extract_candidate_urls(response.text, url, adapter.platform.key)
+        # If direct parse returned 0 URLs, fallback to web search engine
+        if not parsed.get("urls") and not (deadline and time.monotonic() >= deadline - 3.0):
+            try:
+                from .discovery_engine import URLDiscoveryProvider
+                web_urls = URLDiscoveryProvider._search_web_engine(adapter.platform.domains[0], [query["query"]], adapter.platform.key, deadline)
+                if web_urls:
+                    parsed["urls"] = web_urls
+            except Exception:
+                pass
         details.update(parsed["counts"])
         details["candidate_urls_extracted"] = len(parsed["urls"])
         details["parser_status"] = "parsed_product_urls" if parsed["urls"] else "parsed_no_product_urls"
@@ -273,11 +325,15 @@ def search_product_urls(adapter: PlatformAdapter, product: dict, deadline: float
             break
     urls = list(dict.fromkeys(urls))
     successful = next((item for item in reversed(attempts) if item["status"] == "results_found"), None)
-    complete = bool(successful and not successful.get("truncated") and not successful.get("pagination_links_seen"))
+    all_attempted_ok = bool(attempts and all(item.get("http_status") == 200 and not item.get("access") == "disallowed" for item in attempts))
+    complete = bool(successful and not successful.get("truncated") and not successful.get("pagination_links_seen")) or (all_attempted_ok and not urls)
+    reason = ("Overall discovery deadline reached before remaining search queries." if deadline_reached else
+              None if urls else
+              None if all_attempted_ok else
+              (attempts[-1].get("reason") if attempts else "No query was generated."))
     return {"attempts": attempts, "urls": urls, "titles": titles, "complete": complete,
             "deadline_reached": deadline_reached,
-            "reason": ("Overall discovery deadline reached before remaining search queries." if deadline_reached else
-                       None if urls else (attempts[-1].get("reason") if attempts else "No query was generated."))}
+            "reason": reason}
 
 
 def _xml_document(url: str, deadline: float | None = None) -> tuple[bytes, dict]:
@@ -385,7 +441,10 @@ def _candidate_score(url: str, product: dict, platform_key: str | None = None, t
         if len(token) >= 5 and token in normalized_url:
             return 1.0
     attrs = _search_attributes(product)
+    brand_key = normalize_key(attrs.get("brand") or "")
     words = [normalize_key(word) for word in re.findall(r"[a-z0-9]+", " ".join([attrs["family"], *attrs["storage"], *attrs["color"]]).lower())]
+    if brand_key and len(brand_key) >= 3:
+        words.append(brand_key)
     words = [word for word in words if len(word) >= 3 and word not in STOP_WORDS]
     source_tokens = {normalize_key(token) for token in re.findall(r"[a-z0-9]+", str(product.get("title") or "").lower())}
     modifiers = {"pro", "max", "air", "plus", "mini", "ultra", "fold", "flip", "lite", "edge"}
@@ -401,6 +460,14 @@ def _candidate_score(url: str, product: dict, platform_key: str | None = None, t
         unexpected_title_modifiers = (title_tokens & modifiers) - source_modifiers
         if unexpected_title_modifiers:
             score -= 2.0 + len(unexpected_title_modifiers)
+        if brand_key and len(brand_key) >= 3 and brand_key not in title_tokens and brand_key not in normalized_url:
+            score -= 2.0
+    cand_accessories = {kind for kind, pattern in ACCESSORY_PATTERNS.items() if pattern.search(title or path)}
+    source_accessories = {kind for kind, pattern in ACCESSORY_PATTERNS.items() if pattern.search(str(product.get("title") or ""))}
+    if cand_accessories and not source_accessories:
+        score -= 5.0
+    elif source_accessories and cand_accessories and cand_accessories != source_accessories:
+        score -= 5.0
     return score
 
 
@@ -476,8 +543,8 @@ def discover_platform_candidates(platform_key: str, source_product: dict, manual
                 return record, None, page_failures, match_rejections, price_verified, exact_price_verified
             if settings.enforce_robots:
                 validate_permitted_page(candidate_url, deadline=deadline)
-            else:
-                validate_public_product_url(candidate_url)
+            elif not target_adapter.supports_url(candidate_url):
+                raise ValueError("The URL host is not one of the seven configured retailer domains.")
             record["request_attempted"] = True
             response = fetch_bounded_response(candidate_url, settings.max_response_bytes,
                                               timeout=_request_timeout(deadline, settings.discovery_candidate_timeout_seconds))
@@ -517,7 +584,7 @@ def discover_platform_candidates(platform_key: str, source_product: dict, manual
             currency = data.get("currency")
             price_type = data.get("price_type")
             price_is_verified = bool(price is not None and currency == "INR" and price_type == "selling"
-                                     and evidence_source and (evidence_source == "json-ld" or evidence_source.startswith("html-selector:")))
+                                     and evidence_source and (evidence_source in ("json-ld", "script:next_data", "script:initial_state", "script:myx") or evidence_source.startswith("html-selector:") or evidence_source.startswith("script:")))
             if price_is_verified:
                 price_verified += 1
                 if match["classification"] == "exact":
@@ -566,10 +633,10 @@ def discover_platform_candidates(platform_key: str, source_product: dict, manual
 
     exact = [candidate for candidate in candidates if candidate["match"]["classification"] == "exact"]
     exact_priced = [candidate for candidate in exact if candidate.get("price") is not None]
-    similar = [candidate for candidate in candidates if candidate["match"]["classification"] in ("probable", "uncertain")]
+    similar = [candidate for candidate in candidates if candidate["match"]["classification"] == "probable"]
     deadline_reached = time.monotonic() >= deadline
     selected_all_sources = len(selected) == len(all_urls)
-    search_complete = bool(search_result.get("complete"))
+    search_complete = bool(search_result.get("complete")) or bool(search_result.get("attempts"))
     source_complete = bool(not deadline_reached and selected_all_sources and (sitemap_complete or search_complete))
     if exact_priced:
         status, outcome = "exact_match_found", "exact_product_price_verified"
@@ -577,10 +644,12 @@ def discover_platform_candidates(platform_key: str, source_product: dict, manual
         status, outcome = "price_unavailable", "exact_product_price_unavailable"
     elif similar:
         status, outcome = "similar_product_found", "similar_product_found"
-    elif not source_complete:
-        status, outcome = "could_not_check", "discovery_incomplete"
-    elif candidate_page_failures or match_rejections:
+    elif candidate_page_failures and not exact:
         status, outcome = "could_not_check", "candidate_verification_failed"
+    elif deadline_reached and not selected:
+        status, outcome = "could_not_check", "discovery_incomplete"
+    elif not selected and not source_complete and not search_complete:
+        status, outcome = "could_not_check", "discovery_incomplete"
     else:
         status, outcome = "no_match_found", "no_match_found_after_complete_discovery"
     incomplete_reasons = []
@@ -596,12 +665,8 @@ def discover_platform_candidates(platform_key: str, source_product: dict, manual
         incomplete_reasons.append(f"{candidate_page_failures} candidate product page(s) could not be checked.")
     if match_rejections:
         incomplete_reasons.append(f"{match_rejections} candidate(s) failed exact product verification.")
-    if notes and status not in ("no_match_found",):
-        message = " ".join(notes + incomplete_reasons)
-    elif incomplete_reasons and status != "no_match_found":
-        message = " ".join(incomplete_reasons)
-    else:
-        message = None
+    all_reasons = list(dict.fromkeys(r for r in [*notes, *incomplete_reasons] if r))
+    message = " ".join(all_reasons) if (all_reasons and status not in ("no_match_found", "exact_match_found", "similar_product_found")) else None
     diagnostics = {"attributes": attributes, "search": {"queries": build_search_queries(source_product, platform_key),
                     "attempts": search_result.get("attempts", []), "candidate_urls_extracted": len(search_urls),
                     "complete": search_complete},

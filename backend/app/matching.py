@@ -10,11 +10,13 @@ MODEL_VARIANTS = {"pro", "max", "plus", "mini", "air", "ultra", "fold", "flip", 
 MODEL_FAMILIES = ("iphone", "pixel", "ipad", "macbook", "galaxy", "xperia", "oneplus", "redmi", "poco", "oppo", "vivo")
 RETAILER_NAMES = {"shopsy", "flipkart", "amazon", "amazonindia", "meesho", "croma", "ajio", "myntra"}
 ACCESSORY_PATTERNS = {
-    "phone_case": re.compile(r"\b(?:case|cover|shell|skin)\b", re.I),
-    "screen_protector": re.compile(r"\b(?:screen protector|screen guard|tempered glass|lens protector)\b", re.I),
-    "charger": re.compile(r"\b(?:charger|charging adapter|power adapter)\b", re.I),
-    "cable": re.compile(r"\b(?:charging cable|usb cable)\b", re.I),
-    "holder": re.compile(r"\b(?:stand|holder|mount)\b", re.I),
+    "phone_case": re.compile(r"\b(?:case|cover|shell|skin|back cover|flip cover|pouch|sleeve|bumper|housing)\b", re.I),
+    "screen_protector": re.compile(r"\b(?:screen protector|screen guard|tempered glass|lens protector|privacy glass|film)\b", re.I),
+    "charger": re.compile(r"\b(?:charger|charging adapter|power adapter|adapter|wall charger|fast charger|power bank|powerbank)\b", re.I),
+    "cable": re.compile(r"\b(?:charging cable|usb cable|type c cable|lightning cable|data cable|cord|wire)\b", re.I),
+    "audio": re.compile(r"\b(?:earbuds|earbud|earphones|earphone|headphones|headphone|headset|earpods|airpods|airpod|tws|neckband|buds|wireless buds|in-ear)\b", re.I),
+    "wearable": re.compile(r"\b(?:smartwatch|smart watch|smart band|watch strap|wristband|fitness band)\b", re.I),
+    "holder": re.compile(r"\b(?:stand|holder|mount|car mount|tripod|gimbal)\b", re.I),
 }
 
 
@@ -55,11 +57,28 @@ def _spec_variant_values(product: dict, kind: str) -> set[str]:
     return result
 
 
+BRAND_EQUIVALENTS = {
+    "iphone": "apple",
+    "ipad": "apple",
+    "macbook": "apple",
+    "airpods": "apple",
+    "earpods": "apple",
+    "galaxy": "samsung",
+    "pixel": "google",
+    "playstation": "sony",
+    "xbox": "microsoft",
+    "redmi": "xiaomi",
+    "mi": "xiaomi",
+    "poco": "xiaomi",
+}
+
+
 def _brand_key(value: str) -> str:
     words = re.findall(r"[a-z0-9]+", str(value or "").lower())
     while words and words[-1] in {"inc", "ltd", "limited", "corp", "corporation", "company", "co"}:
         words.pop()
-    return "".join(words)
+    key = "".join(words)
+    return BRAND_EQUIVALENTS.get(key, key)
 
 
 def _same_variant_title(left: dict, right: dict) -> bool:
@@ -81,8 +100,12 @@ def match_product(anchor: dict, candidate: dict) -> dict:
                 evidence.append(f"brand verified from title ({a_brand})")
             elif a_key in RETAILER_NAMES and b_key in {normalize_key(t) for t in a_title["tokens"]}:
                 evidence.append(f"brand verified from title ({b_brand})")
+            elif a_title["model_keys"] and a_title["model_keys"] == b_title["model_keys"] and (a_key in {normalize_key(t) for t in b_title["tokens"]} or b_key in {normalize_key(t) for t in a_title["tokens"]}):
+                evidence.append(f"brand verified from model family ({a_brand} / {b_brand})")
             else:
                 conflicts.append("brand differs")
+        else:
+            evidence.append("brand matches")
 
     a_ids, b_ids = anchor.get("identifiers", {}), candidate.get("identifiers", {})
     exact_id = False

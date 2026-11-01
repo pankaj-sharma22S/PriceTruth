@@ -144,6 +144,17 @@ def fetch_bounded_response(url: str, max_bytes: int, timeout: float | None = Non
     chunks, size = [], 0
     started = time.perf_counter()
     headers = dict(DEFAULT_REQUEST_HEADERS)
+    host = urlparse(url).netloc.lower()
+    if "amazon.in" in host:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-IN,en;q=0.9",
+            "Referer": "https://www.amazon.in/",
+            "Connection": "keep-alive",
+        }
+    elif "ajio.com" in host:
+        headers["Referer"] = "https://www.ajio.com/"
     with httpx.Client(timeout=timeout or settings.request_timeout_seconds, follow_redirects=False,
                       headers=headers) as client:
         with client.stream("GET", url) as response:

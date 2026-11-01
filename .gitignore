@@ -1,11 +1,113 @@
+# ==========================================
+# Environment & Secrets
+# ==========================================
 .env
-.venv/
+.env.*
+*.env
+*.env.secret
+.env.secret
+!*.env.example
+!.env.example
+!*.example*
+!*.example
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+
+# ==========================================
+# Python & Virtual Environments
+# ==========================================
 __pycache__/
-*.pyc
+*.py[cod]
+*.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+pip-log.txt
+pip-delete-this-directory.txt
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.log
+.hypothesis/
 .pytest_cache/
+
+# ==========================================
+# Node.js & Frontend
+# ==========================================
 node_modules/
 dist/
+dist-ssr/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.npm
+.eslintcache
+.vite/
+tsconfig.tsbuildinfo
+
+# ==========================================
+# Databases & Local Data Dumps
+# ==========================================
+*.sqlite
+*.sqlite3
 *.db
 *.db-shm
 *.db-wal
+*.sql
+*.dump
+dev.db*
+pricetruth.db*
+live_discovery_results.json
 
+# ==========================================
+# Operating System & IDEs
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+*.swp
+*.swo
+*~
+
+# ==========================================
+# Temporary & Diagnostic Output Files
+# ==========================================
+*.tmp
+*.bak
+*.swp
+out/
+tmp/
+temp/
+debug/
+shopsy_sample.html
+
+# Local binaries
+kubectl
+kubectl.exe

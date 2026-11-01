@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pricetruth
+
+resources:
+  - 01-namespace-and-rbac.yaml
+  - 02-database.yaml
+  - 03-cache.yaml
+  - 04-app.yaml
+  - 05-ingress.yaml
+  - 06-monitoring.yaml
+
+configMapGenerator:
+  - name: pricetruth-config
+    envs:
+      - .env
+
+secretGenerator:
+  - name: pricetruth-secrets
+    envs:
+      - .env.secret

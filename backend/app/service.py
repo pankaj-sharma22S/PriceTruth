@@ -74,9 +74,11 @@ def inspect_url(url: str, db: Session) -> dict:
                                       price=data["price"], currency=data["currency"], price_type=data["price_type"], availability=data["availability"],
                                       observed_at=observation.observed_at))
     db.commit()
-    return {"product": {"id": product.id, "title": product.title, "brand": product.brand, "model": product.model, "identifiers": product.identifiers, "specs": product.specs, "origin_platform": product.origin_platform},
-            "source": {"platform": adapter.platform.key, "status": observation.status, "observed_at": observation.observed_at},
-            "offers": [{"id": listing.id, "listing_id": listing.id, "platform": listing.platform, "url": url, "title": listing.title, "image_url": data["image_url"], "price": data["price"], "currency": data["currency"], "price_type": data["price_type"], "availability": data["availability"], "observed_at": observation.observed_at, "freshness": "fresh", "status": observation.status, "match": {"classification": "exact", "evidence": ["user-submitted source listing"], "missing": [], "conflicts": []}}],
+    obs_time = observation.observed_at.isoformat() if observation.observed_at else None
+    price_val = str(data["price"]) if data["price"] is not None else None
+    return {"product": {"id": product.id, "title": product.title, "brand": product.brand, "model": product.model, "identifiers": product.identifiers, "specs": product.specs, "origin_platform": product.origin_platform, "image_url": data.get("image_url")},
+            "source": {"platform": adapter.platform.key, "status": observation.status, "observed_at": obs_time},
+            "offers": [{"id": listing.id, "listing_id": listing.id, "platform": listing.platform, "url": url, "title": listing.title, "image_url": data["image_url"], "price": price_val, "currency": data["currency"], "price_type": data["price_type"], "availability": data["availability"], "observed_at": obs_time, "freshness": "fresh", "status": observation.status, "match": {"classification": "exact", "evidence": ["user-submitted source listing"], "missing": [], "conflicts": []}}],
             "lowest_verified_offer": None, "platforms": platform_status(), "discovery_run_id": run.id}
 
 
@@ -101,7 +103,7 @@ def compare_saved_product(product_id: int, db: Session) -> dict:
         freshness = "fresh" if datetime.now(timezone.utc) - checked_at <= timedelta(hours=24) else "stale"
         candidate = {"title": listing.title, "model": listing.model, "identifiers": listing.identifiers, "specs": listing.specs}
         match = {"classification": "exact", "evidence": ["user-submitted source listing"], "missing": [], "conflicts": []} if listing.url == product.origin_url else match_product(anchor, candidate)
-        offers.append({"id": listing.id, "listing_id": listing.id, "platform": listing.platform, "url": listing.url, "title": listing.title, "image_url": listing.image_url, "price": observation.price, "currency": observation.currency, "price_type": observation.price_type, "availability": observation.availability, "observed_at": observation.observed_at, "freshness": freshness, "status": observation.status, "match": match})
+        offers.append({"id": listing.id, "listing_id": listing.id, "platform": listing.platform, "url": listing.url, "title": listing.title, "image_url": listing.image_url, "price": str(observation.price) if observation.price is not None else None, "currency": observation.currency, "price_type": observation.price_type, "availability": observation.availability, "observed_at": checked_at.isoformat(), "freshness": freshness, "status": observation.status, "match": match})
     eligible = [o for o in offers if o["match"]["classification"] == "exact" and o["price"] is not None and o["price_type"] == "selling" and o["currency"] == "INR" and o["status"] == "success" and o["freshness"] == "fresh"]
     winner = min(eligible, key=lambda o: o["price"]) if eligible else None
-    return {"product": {"id": product.id, "title": product.title, "brand": product.brand, "model": product.model, "identifiers": product.identifiers, "specs": product.specs, "origin_platform": product.origin_platform}, "offers": offers, "lowest_verified_offer": winner, "platforms": platform_status()}
+    return {"product": {"id": product.id, "title": product.title, "brand": product.brand, "model": product.model, "identifiers": product.identifiers, "specs": product.specs, "origin_platform": product.origin_platform, "image_url": data.get("image_url")}, "offers": offers, "lowest_verified_offer": winner, "platforms": platform_status()}
